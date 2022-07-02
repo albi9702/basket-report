@@ -123,7 +123,7 @@ download_all_games <- function(season, n_games){
   
   print(end_time - start_time)
   
-    return(list(df_all_games, df_all_shots))
+  return(list(df_all_games, df_all_shots))
 
 }
 
@@ -133,7 +133,7 @@ if (download == tolower(download)) {
   
   print("Downloading file ...")
   gv_df_all_games <- download_all_games(season = 2021,
-                                        n_games = 3)
+                                        n_games = 50)
 } else {
   "You loaded the file"
 }
@@ -141,21 +141,16 @@ if (download == tolower(download)) {
 gv_df_all_events <- gv_df_all_games[[1]]
 gv_df_all_shots <- gv_df_all_games[[2]]
 
-
-df_all_games %>%
-  mutate_if(is.character, str_trim) %>%
-  group_by(PLAYER_ID) %>%
-  count(PLAYTYPE) %>%
-  filter(PLAYER_ID == "P007432")
-
 #-- Set Up Data Frames for a Data Model
 
+#-- Player Description
 gv_df_player_id <- gv_df_all_events %>%
   select(CODETEAM, PLAYER_ID, PLAYER, DORSAL, TEAM) %>%
   filter(!(PLAYER_ID == "") & !(PLAYER == "")) %>%
   unique() %>%
   arrange(CODETEAM, as.integer(DORSAL))
 
+#-- Playtyoe Description
 gv_df_playtype <- gv_df_all_events %>% 
   separate(PLAYINFO,
            into = c("PLAYINFO", "Other"),
@@ -164,3 +159,11 @@ gv_df_playtype <- gv_df_all_events %>%
   mutate_if(is.character, str_trim) %>%
   unique() %>%
   filter(!(PLAYINFO == ""))
+
+#-- Stats
+gv_df_stats <- gv_df_all_events %>%
+  mutate_if(is.character, str_trim) %>%
+  group_by(PLAYER_ID) %>%
+  count(PLAYTYPE) %>%
+  pivot_wider(names_from = PLAYTYPE,
+              values_from = n)
