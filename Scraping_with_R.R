@@ -1,212 +1,90 @@
-#-- Librerie ----
-library(rvest)
-library(lubridate)
-library(xml2)
-library(dplyr)
-library(stringr)
-library(plotly)
+#-- The function ipak takes in input a list of packages and automatically
+#-- detect if a package is not installed, otherwise load it. It returns a
+#-- prompt of loaded packages
 
-#-- Variabili ----
+ipak <- function(package) {
+  new_package <- package[!(package %in% installed.packages()[, "Package"])]
 
-id_games    <- c(455:458)
-id_calendar <- c(1801:1832)
-
-#-- Funzione di Scraping ----
-scrape_table <- function(team, id_game) {
-
-  #-- Lettura del File HTML
-  html <- read_html(paste0("https://lombardiacanestro.it/Maschile/Tabellino?idgame=",
-                    id_game))
-
-  #-- Scraping Testata di Colonna
-  colnames <- html                                  %>%
-              html_nodes(paste0("table#",
-                         team,
-                         " > thead > tr > th"))     %>%
-              html_text()
-
-  #-- Scraping Tabella
-  table <- html                                     %>%
-           html_nodes(paste0("table#",
-                             team,
-                             " > tbody > tr > td")) %>%
-           html_text()                              %>%
-           matrix(ncol = length(colnames),
-                  byrow = TRUE)                     %>%
-           cbind(colnames[1])                       %>%
-           as.data.frame()
-
-  #-- Rinomina Colonne
-  colnames(table) <- c("giocatore",    "tiri_liberi",
-                       "due_punti",    "tre_punti",
-                       "punti_totali", "squadra")
-
-  #-- Filtro su Allenatore
-  table <- table %>%
-           filter(tiri_liberi != "Allenatore")
-
-  return(table)
+  if (length(new_package)) {
+    install.packages(new_package,
+                     dependencies = TRUE
+    )
+  }
+  sapply(package, require,
+         character.only = TRUE
+  )
 }
 
-#-- Funzione Plotly ----
+#-- Libraries ----
+ipak(c("rvest", "lubridate", "xml2",
+     "dplyr", "stringr", "plotly"))
 
-plot_stats <- function(team, scrape = TRUE) {
+#-- Funzione di Scraping ----
+scraping_table <- function(id_game_html){
 
-  all_games <- NULL
-  all_scores <- NULL
+    all_games <- NULL
+    all_scores <- NULL
 
-  if (scrape == TRUE) {
+    for (game in id_game_html){
 
-    for (games in id_calendar) {
+      print(game)
+      html <- try(read_html(paste0(
+                        "https://lombardiacanestro.it/Maschile/Tabellino?idgame=",
+                          game)), TRUE)
 
-      #-- Richiamo della Funzione
-      home_team <- scrape_table(team = "homeTable",
-                                id_game = games)
-      away_team <- scrape_table(team = "awayTable",
-                                id_game = games)
+      ifelse(grepl("Error", html[1]) == TRUE, next, "corretto")
 
-      #-- Aggiunta della Squadra Avversaria
-      home_team <- home_team %>%
-                   mutate(avversario = away_team$squadra[1],
-                          id_game = games)
-      away_team <- away_team %>%
-                   mutate(avversario = home_team$squadra[1],
-                          id_game = games)
+      for (tables in seq(1,3,1)){
 
-      #-- Concatenazione del Tabellino
-      all_games <- dplyr::bind_rows(all_games, home_team)
-      all_games <- dplyr::bind_rows(all_games, away_team)
+        if (tables == 1){
 
-      #-- Risultato Finale (Squadra)
-      home_points <- home_team %>%
-                     summarise(squadra = home_team$squadra[1],
-                               punti = sum(as.numeric(punti_totali)),
-                               games = games)
-      away_points <- away_team %>%
-                     summarise(squadra = away_team$squadra[1],
-                               punti = sum(as.numeric(punti_totali)),
-                               games = games)
+          name_teams <- rvest::html_nodes(html, "table")[tables] %>%
+                        rvest::html_table(fill = TRUE) %>%
+                        as.data.frame() %>%
+                         .[2:3,1]
 
-      single_score <- rbind(home_points, away_points)
-      all_scores <- dplyr::bind_rows(all_scores, single_score)
+        } else {
+
+          ifelse(tables == 3, name_teams[c(1,2)] <- name_teams[c(2,1)], NA)
+
+          temp_table <- rvest::html_nodes(html, "table")[tables] %>%
+                        rvest::html_table(fill = TRUE) %>% as.data.frame() %>%
+                        dplyr::mutate(squadra = str_to_title(name_teams[1]),
+                                      avversario = str_to_title(name_teams[2]),
+                                      partita = ifelse(tables == 2, "C", "T"),
+                                      id_gara = game)
+
+          colnames(temp_table) <- c("giocatore", "tiri_liberi", "due_punti",
+                                    "tre_punti", "punti_totali", "squadra",
+                                    "avversario", "partita","id_gara")
+
+          ifelse(temp_table$giocatore == 'Tabellino non disponibile',
+                 next,
+                 all_games <- dplyr::bind_rows(all_games, temp_table))
+
+
+        }
+
+      }
 
     }
 
-    #-- Salvataggio File RDS
-    saveRDS(all_games, "all_games.rds")
-
-  } else {
-
-    #-- Recupero del File
-    all_games <- readRDS("all_games.rds")
-    print("La tabella ? gi? stata scaricata")
-
-  }
-
-  #-- Trasformazione in colonne Numeriche
-  for (i in colnames(all_games[, c(2:5)])) all_games[, i] <- as.numeric(all_games[, i])
-
-  all_games[is.na(all_games)] <- 0
-
-  #-- Punteggio a Partita
-  team_points <- all_games            %>%
-                 group_by(squadra,
-                          id_game,
-                          avversario) %>%
-                 summarise(punti_totali = sum(punti_totali),
-                           due_punti    = sum(due_punti) * 2,
-                           tre_punti    = sum(tre_punti) * 3,
-                           tiri_liberi  = sum(tiri_liberi))
-
-  #-- Punteggio Medio a Partita per Squadra
-  temp <- team_points       %>%
-  group_by(squadra) %>%
-  summarise(punti_totali = mean(punti_totali),
-            due_punti    = mean(due_punti),
-            tre_punti    = mean(tre_punti),
-            tiri_liberi  = mean(tiri_liberi))
-
-  #-- Capire come implementare il ranking
-  #-- e Visualizzare la Tabella
-  cbind(temp$squadra,
-  rank(desc(temp$punti_totali), ties.method = "min"),
-  rank(desc(temp$due_punti), ties.method = "min"),
-  rank(desc(temp$tre_punti), ties.method = "min"),
-  rank(desc(temp$tiri_liberi), ties.method = "min"))
-
-  #-- Unione della Tabella con se stessa
-  team_points <- left_join(team_points,
-                           team_points,
-                           by = c("avversario" = "squadra",
-                                  "id_game"))   %>%
-                 select(id_game, squadra,
-                        avversario, punti_totali.x,
-                        punti_totali.y, due_punti.x,
-                        tre_punti.x, tiri_liberi.x) %>%
-                 mutate(differenza = punti_totali.x - punti_totali.y,
-                        color = differenza > 0) %>%
-                 filter(squadra == team)
-
-  #-- Aggiunta Colori per Grafico
-  #-- Verde se Vittoria
-  team_points$color[team_points$differenza > 0] <- "rgba(50, 171, 96, 0.7)"
-  #-- Rosso se Sconfitta
-  team_points$color[team_points$differenza < 0] <- "rgba(219, 64, 82, 0.7)"
-
-  #-- Costruzione Tabella Punteggio Medio
-  stats <- all_games                                    %>%
-           filter(squadra == team)                      %>%
-           group_by(giocatore)                          %>%
-           summarise(punti_medi  = mean(punti_totali),
-                     due_punti   = mean(due_punti) * 2,
-                     tre_punti   = mean(tre_punti) * 3,
-                     tiri_liberi = mean(tiri_liberi))   %>%
-           arrange(desc(punti_medi))
-
-  #-- Costruzione Punteggio Medio a Partita
-  fig_player <- plot_ly(stats,
-                 x = ~giocatore,
-                 y = ~due_punti,
-                 type = "bar",
-                 name = "Due Punti",
-                 marker = list(color = "rgba(50, 171, 96, 0.7)",
-                               line = list(color = "rgba(50, 171, 96, 1.0)",
-                                           width = 2))) %>%
-    add_trace(y = ~tre_punti,
-              name = "Tre Punti",
-              marker = list(color = "rgba(55, 128, 191, 0.7)",
-                            line = list(color = "rgba(55, 128, 191, 0.7)",
-                                        width = 2))) %>%
-    add_trace(y = ~tiri_liberi,
-              name = "Tiri Liberi",
-              marker = list(color = "rgba(219, 64, 82, 0.7)",
-                            line = list(color = "rgba(219, 64, 82, 1.0)",
-                                        width = 2))) %>%
-    layout(yaxis = list(title = "Punteggio Medio a Partita"),
-           xaxis = list(title = "Giocatore",
-                        categoryorder = "array",
-                        categoryarray = c("punti_medi", "tre_punti",
-                                          "due_punti",  "tiri_liberi")),
-           barmode = "stack",
-           title = list(text = team,
-                        y = 0.95),
-           legend = list(title = list(text = "<b>Canestri</b>"),
-                         y = 0.95,
-                         x = 0.9))
-
-  fig_team <- plot_ly(team_points,
-                      x = ~reorder(id_game, avversario),
-                      y = ~differenza,
-                      type = "bar",
-                      marker = list(color = ~color)) %>%
-              layout(title = "Partite",
-                     xaxis = list(title = team),
-                     yaxis = list(title = "Differenza"),
-                     title = list(text = team,
-                                  y = 0.95))
-
-  return(list(fig_player, fig_team))
+      return(all_games)
 }
 
-plot_stats(team = "osal novate",
-           scrape = FALSE)
+all_table <- scraping_table(id_game_html = c(3427:3466))
+head(all_table)
+
+#-- Classifica Complessiva -----
+
+html2 <- read_html("https://lombardiacanestro.it/Maschile/Calendar?id=23&idturn=497")
+
+classifica <- rvest::html_nodes(html2, "table") %>%
+                        rvest::html_table(fill = TRUE) %>%
+                        as.data.frame()
+                        
+classifica[, c("Squadra")] <- str_to_title(classifica[, "Squadra"])
+colnames(classifica) <- c("posizione", "squadra", "punti",
+                          "partite_giocate", "vittorie",
+                          "sconfitte", "punti_fatti",
+                          "punti_subiti")
