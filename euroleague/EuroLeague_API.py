@@ -2,6 +2,7 @@
 
 import requests
 import pandas as pd
+import numpy as np
 import time
 import pickle
 
@@ -196,108 +197,103 @@ def get_games(n_games, season):
 
     return df_all_game_events, df_all_game_shots, df_all_boxscore
 
-#%%
+# %% [Import Pickle]
 
-df_game_events, df_game_shots, df_boxscore = get_games(n_games = 216, season = range(2022,2023))
-#df_game_shots = get_games(n_games = 1, season = range(2020, 2021))
-#%%
-#df_game_shots["GAME_ID"].unique()
+def import_pickle(response = 'Y'):
 
-df_game_events.to_pickle("df_game_events.pkl")
-df_boxscore.to_pickle("df_boxscore.pkl")
-df_game_shots.to_pickle("df_game_shots.pkl")
+    if response == 'Y':
+        df_game_events = pickle.load(open("/home/alberto/Git/basket-report/euroleague/pickle/df_boxscore.pkl",'rb'))
+        df_boxscore = pickle.load(open("/home/alberto/Git/basket-report/euroleague/pickle/df_boxscore.pkl",'rb'))
+        df_game_shots = pickle.load(open("/home/alberto/Git/basket-report/euroleague/pickle/df_game_shots.pkl",'rb'))
+    else:
+        df_game_events, df_game_shots, df_boxscore = get_games(n_games = 216, season = range(2022,2023))
 
-#%%
+    return [df_game_events, df_game_shots, df_boxscore]
 
-#-- Strip degli spazi
+# %% [Cumulative Standings Function]
 
-df_single_player = df_boxscore[df_boxscore["Player_ID"] == 'PJDR      ']
-df_single_player["2P"] = df_boxscore["FieldGoalsMade2"] * 2
-df_single_player["3P"] = df_boxscore["FieldGoalsMade3"] * 3
+def get_cumulative_standings(df = import_pickle(response = 'Y')[2]):
 
+    """
+    This function takes in input the df_boxscore for all games scraped from the previous functions.
+    It returns the cumulative Standings for each Games, in order to identify the trend of the single Team.
 
-#df_boxscore.to_csv("df_boxscore.csv")
+    The following Columns are calculated:
 
-#%%
-import plotly.express as px
-import plotly.graph_objects as go
-#%%
-px.bar(data_frame = df_single_player,
-       x = "GAME_ID",
-       y = ["2P", "3P", "FreeThrowsMade"],
-       title = "Player Stats",
-       hover_data = ["Points"],
-       labels = {})
+    * Point_Diff: Points difference for each Game for each Team;
+    * Result [W/L]: Boolean variable to identify if a Team won o lost;
+    * Cumulative_Wins_Team: cumulative Wins for each Round and each Team;
+    * Round: Round of each Game;
+    * Opponent: Opponent Team matched in the Game;
+    * Win_Last5 / Win_Last10: Number of Wins in Last 5 / 10 games
+    """
 
-#%%
-fig = go.Figure()
-fig.add_traces(
-    go.Bar(
-        x = df_single_player["GAME_ID"],
-        y = df_single_player["2P"],
-        name = "2 Points Made"
+    #-- Group the BoxScore table by Team and Game and calculate the sum of the Values
+    df_cumulative_standings = df.groupby(["GAME_ID", "Team"]).sum()
+
+    #-- Then calculate the difference between rows. In this case, for each Game calculates the
+    #-- point difference between Teams
+    df_cumulative_standings['Point_Diff'] = df_cumulative_standings.groupby('GAME_ID')['Points'].diff()
+    
+    #-- In order to have Not Null values, fill the NaN Values with the opposite value for each Game to the other Team
+    df_cumulative_standings['Point_Diff'] = df_cumulative_standings['Point_Diff'].fillna(-df_cumulative_standings['Point_Diff'].shift(-1))
+
+    #-- Create a column to identify if the Team for each Game won (W) or lost (L)
+    df_cumulative_standings['Result'] = df_cumulative_standings['Point_Diff'].apply(lambda x: 'W' if x > 0 else 'L')
+    
+    # In order to identify the trend of wins per each Game, add a cumulative sum for all wins
+    df_cumulative_standings['Cumulative_Wins_Team'] = df_cumulative_standings.groupby('Team')['Result'].apply(lambda x: (x == 'W').cumsum())
+    df_cumulative_standings = df_cumulative_standings.reset_index().sort_values(by = 'GAME_ID')
+
+    #-- Each Round is composed by 9 games. Number of games are identified from the 3rd to the 6th digit in the GAME_ID column.
+    df_cumulative_standings['Round'] =  df_cumulative_standings['GAME_ID'].str[3:6].astype(int) // 10 + 1
+
+    #-- Select the opposite Team for each Game and fill NaN Values with the opposite (it's like a switch of the Teams for each Game)
+    df_cumulative_standings['Opponent'] = df_cumulative_standings.groupby('GAME_ID')['Team'].shift(1)
+    df_cumulative_standings['Opponent'] = df_cumulative_standings['Opponent'].fillna(df_cumulative_standings.groupby('GAME_ID')['Team'].shift(-1))
+
+    #-- In order to identify the streak, select the Number of Wins from Last 5 and 10 Games
+    df_cumulative_standings['Win_Loss'] = np.where(df_cumulative_standings['Result'] == 'W', 1, 0)
+    df_cumulative_standings['Win_Last5'] = df_cumulative_standings.groupby('Team')['Win_Loss'].apply(lambda x: x.rolling(5, min_periods=1).sum())
+    df_cumulative_standings['Win_Last10'] = df_cumulative_standings.groupby('Team')['Win_Loss'].apply(lambda x: x.rolling(10, min_periods=1).sum())
+
+    return df_cumulative_standings
+
+# %% [Standing Function]
+
+def get_standing():
+
+    """
+    This function takes in input the Cumulative Standings developed in the previous function.
+    It returns the standing containing all cumulative information about the Euroleague.
+    """
+
+    df = get_cumulative_standings()
+
+    # Group the dataframe by Team and calculate the sum of the following Columns
+    df_standing = df.groupby("Team").agg(
+    {
+        "Points": "sum",
+        "Point_Diff": "sum",
+        'Result': lambda x: (x == 'W').sum(),
+        'Opponent': lambda x: (x == 'N').sum(),
+        'Win_Last5': "last",
+        'Win_Last10': "last",
+        'GAME_ID': 'nunique'
+    }
     )
-)
-fig.add_traces(
-    go.Bar(
-        x = df_single_player["GAME_ID"],
-        y = df_single_player["3P"],
-        name = "3 Points Made"
-    )
-)
-fig.add_traces(
-    go.Bar(
-        x = df_single_player["GAME_ID"],
-        y = df_single_player["FreeThrowsMade"],
-        name = "Free Throws Made",
-        text = df_single_player["Points"],
-        textposition = "outside",
-    )
-)
 
-fig.update_layout(barmode = 'stack',
-                  xaxis_tickangle = -45,
-                  title_text = 'Point By Game'
-                  )
-
-# %%
-
-import pycelonis
-from pycelonis import get_celonis
-from pycelonis import pql
-
-print(pycelonis.__version__)
-
-celonis = get_celonis(
-    base_url = "alberto-filosa-protiviti-it.training.celonis.cloud",
-    api_token = "NzQ4Mzg3YjctNzkzNy00ZTFhLWE5ZTUtN2Y5NDk0MGVhYWJiOnlHK2xYb3NKRHpwTitGU053NUxOT2ZDZFZOUllKaXNsNWlUeGFwVnJ0UTc3",
-    key_type = 'USER_KEY'
-)
-# %%
-
-df_game_events = pickle.load(open("/home/alberto/Git/basket-report/df_game_events.pkl",'rb'))
-df_boxscore = pickle.load(open("/home/alberto/Git/basket-report/df_boxscore.pkl",'rb'))
-df_game_shots = pickle.load(open("/home/alberto/Git/basket-report/df_game_shots.pkl",'rb'))
-
-# %%
-
-dp_euroleague = celonis.data_integration.get_data_pool("26a8fa87-21b1-4850-9447-48c2e6a171fc")
-
-dp_euroleague.create_table(table_name = "BoxScore", df = df_boxscore, drop_if_exists = True, force = True)
-dp_euroleague.create_table(table_name = "GameEvents", df = df_game_events, drop_if_exists = True, force = True)
-dp_euroleague.create_table(table_name = "GameShots", df = df_game_shots, drop_if_exists = True, force = True)
-
-#%%
-df = df_boxscore.groupby(["GAME_ID", "Team"]).sum()
-df["Point_Diff"] = df.groupby('GAME_ID')['Points'].diff()
-df["Point_Diff"] = df['Point_Diff'].fillna(-df['Point_Diff'].shift(-1))
-
-df['Result'] = df['Point_Diff'].apply(lambda x: 'W' if x > 0 else 'L')
-df
-
-#%%
-#df.groupby('Team')['Result'].value_counts()
-df['Cumulative_Wins_Team'] = df.groupby('Team')['Result'].apply(lambda x: (x == 'W').cumsum())
-#df.reset_index(drop = True).sort_values(by = 'GAME_ID')
-
-# %% 
+    #-- Renaming Columns
+    df_standing.columns = ['Points_Made', 'Points_Diff', 'Wins', 'Losses',
+                           "Win_Last5", "Win_Last10", "Games"]
+    
+    #-- Creating the Following new columns
+    df_standing['Losses'] = df_standing['Games'] - df_standing['Wins'] #--  Number of Losses
+    df_standing["Points_Sub"] = df_standing["Points_Made"] - df_standing["Points_Diff"] #-- Point Sub
+    df_standing["Percentage"] = df_standing['Wins'] / df_standing['Games'] #-- Percentage of Wins
+    
+    #-- Sort Values by Number of Wins and Reset Index
+    df_standing = df_standing.sort_values("Wins", ascending=False)
+    df_standing = df_standing.reset_index()
+    
+    return df_standing
