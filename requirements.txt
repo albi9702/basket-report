@@ -1,0 +1,5 @@
+pandas==1.0.3
+numpy==1.20.3
+pycelonis==1.7.2
+pycelonis-core==2.0.0
+tqdm==4.65.0
